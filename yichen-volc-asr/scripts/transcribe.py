@@ -22,6 +22,23 @@ import argparse
 import subprocess
 from difflib import SequenceMatcher
 
+
+def _load_env_file():
+    """Load ~/.config/yichen-asr/env for keys not already set (explicit env wins)."""
+    env_path = os.path.expanduser("~/.config/yichen-asr/env")
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("export ") and "=" in line:
+                    key, _, value = line[7:].partition("=")
+                    os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env_file()
+
 # ─────────────────────────────────────────────
 # 配置
 # ─────────────────────────────────────────────
@@ -112,6 +129,11 @@ def get_tos_credentials():
     return access_key, secret_key
 
 
+def _tos_client(access_key, secret_key):
+    import tos
+    return tos.TosClientV2(access_key, secret_key, f"tos-{TOS_REGION}.volces.com", TOS_REGION)
+
+
 def upload_to_tos(file_path, access_key, secret_key):
     """上传文件到TOS"""
     filename = os.path.basename(file_path)
@@ -119,27 +141,11 @@ def upload_to_tos(file_path, access_key, secret_key):
 
     print(f"正在上传: {filename} ({file_size} bytes)")
 
-    url = f"https://{TOS_BUCKET}.tos-{TOS_REGION}.volces.com/{filename}"
-
-    with open(file_path, 'rb') as f:
-        file_data = f.read()
-
-    headers = {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': str(file_size),
-    }
-
     try:
-        resp = requests.put(url, data=file_data, headers=headers)
-        print(f"上传响应: {resp.status_code}")
-
-        if resp.status_code in [200, 201]:
-            print("上传成功!")
-            set_public_access(filename, access_key, secret_key)
-            return f"https://{TOS_BUCKET}.tos-{TOS_REGION}.volces.com/{filename}"
-        else:
-            print(f"上传失败: {resp.status_code} - {resp.text}")
-            return None
+        _tos_client(access_key, secret_key).put_object_from_file(TOS_BUCKET, filename, file_path)
+        print("上传成功!")
+        set_public_access(filename, access_key, secret_key)
+        return f"https://{TOS_BUCKET}.tos-{TOS_REGION}.volces.com/{filename}"
     except Exception as e:
         print(f"上传出错: {e}")
         return None
@@ -148,35 +154,11 @@ def upload_to_tos(file_path, access_key, secret_key):
 def set_public_access(filename, access_key, secret_key):
     """设置文件为公开访问"""
     print("设置公开访问权限...")
-
-    url = f"https://{TOS_BUCKET}.tos-{TOS_REGION}.volces.com/{filename}?acl"
-
-    acl_xml = '''<?xml version="1.0" encoding="UTF-8"?>
-<AccessControlPolicy>
-    <Owner>
-        <ID>owner123</ID>
-    </Owner>
-    <AccessControlList>
-        <Grant>
-            <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Group">
-                <URI>http://acs.amazonaws.com/groups/global/AllUsers</URI>
-            </Grantee>
-            <Permission>READ</Permission>
-        </Grant>
-    </AccessControlList>
-</AccessControlPolicy>'''
-
-    headers = {
-        'Content-Type': 'application/xml',
-        'Content-Length': str(len(acl_xml)),
-    }
-
     try:
-        resp = requests.put(url, data=acl_xml, headers=headers)
-        if resp.status_code in [200, 201, 204]:
-            print("公开访问权限设置成功!")
-        else:
-            print(f"设置公开访问失败: {resp.status_code} (可能bucket已公开)")
+        import tos
+        _tos_client(access_key, secret_key).put_object_acl(
+            TOS_BUCKET, filename, acl=tos.ACLType.ACL_Public_Read)
+        print("公开访问权限设置成功!")
     except Exception as e:
         print(f"设置公开访问出错: {e}")
 
@@ -195,7 +177,7 @@ def submit_asr(audio_url, file_path=None):
     headers = {
         "X-Api-Access-Key": ACCESS_TOKEN,
         "X-Api-App-Key": APP_ID,
-        "X-Api-Resource-Id": "volc.seedasr.auc",
+        "X-Api-Resource-Id": os.getenv("VOLC_ASR_RESOURCE_ID", "volc.bigasr.auc"),
         "X-Api-Request-Id": request_id,
         "X-Api-Sequence": "-1",
         "Content-Type": "application/json"
@@ -236,7 +218,7 @@ def query_asr(request_id):
     headers = {
         "X-Api-Access-Key": ACCESS_TOKEN,
         "X-Api-App-Key": APP_ID,
-        "X-Api-Resource-Id": "volc.seedasr.auc",
+        "X-Api-Resource-Id": os.getenv("VOLC_ASR_RESOURCE_ID", "volc.bigasr.auc"),
         "X-Api-Request-Id": request_id,
         "Content-Type": "application/json"
     }
