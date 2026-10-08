@@ -152,14 +152,14 @@ This repository references and adapts ideas/workflows from external projects.
   - Users must identify the runtime's distributor and check its applicable license, service terms, redistribution rights, and version-specific notices before installation or use.
   - This repository's license and this notice are not a license grant for the external CLI.
 
-## 13) Jianying Headless external private core
+## 13) Jianying Headless external core
 
-- Project: https://github.com/mcncarl/jianying-headless (authorized private access required).
+- Project: https://github.com/mcncarl/jianying-headless (public source preview, installed separately).
 - Skill: `yichen-jianying-edit`; this collection contains only the Skill, its wrappers and speech-plan helpers.
 - The separate core preserves its jy-draftc MIT interface attribution and historical pyJianYingDraft Apache-2.0 relationship. It does not claim clean-room provenance.
 - No Jianying application, official library, native resource package, account data, user media, ASR executor or service credential is distributed here.
-- The Skill and core's original portions use personal-learning and non-commercial terms; upstream MIT / Apache-2.0 licenses remain in effect for their respective portions. This collection's license cannot grant access or rights to the separate private core, proprietary editor, native materials or paid services.
-- Public distribution is limited to this Skill's instructions, entrypoint and speech-plan helpers. The core remains private, and existing collection directories' licenses are unchanged.
+- The Skill and core's original portions use personal-learning and non-commercial terms; upstream MIT / Apache-2.0 licenses remain in effect for their respective portions. This collection's license grants no rights to the separate core, proprietary editor, native materials or paid services; the core is governed by its own terms.
+- This collection distributes only this Skill's instructions, entrypoint and speech-plan helpers. The core is distributed separately under its own terms, and existing collection directories' licenses are unchanged.
 
 ## Notes
 
