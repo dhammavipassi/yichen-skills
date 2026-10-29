@@ -1,2 +1,0 @@
---only-binary=:all:
-zstandard==0.25.0

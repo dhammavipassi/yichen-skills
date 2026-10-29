@@ -27,7 +27,7 @@ Join **TradeWinds**, Yichen’s paid community, to unlock commercial authorizati
 
 1. Upload Obsidian/Markdown articles to X Articles drafts (`yichen-x-article-draft-uploader`)
 2. Run two WeChat accounts on one Mac with a distinct blue icon (`yichen-mac-wechat-dual-open`)
-3. Turn WeChat chats, Moments, and Favorites into AI-powered digital assets (`yichen-wechat-local-vault`)
+3. Turn local WeChat chats, Moments, and Favorites into digital assets on macOS and Windows (`yichen-wechat-local-vault`)
 4. Fetch benchmark videos from known Douyin links (`yichen-content-archive`)
 5. Fetch benchmark posts from known Xiaohongshu links (`yichen-content-archive`)
 6. Transcribe, caption, and rough-cut talking-head videos with Volcengine ASR (`yichen-volc-asr`)
@@ -43,36 +43,9 @@ Join **TradeWinds**, Yichen’s paid community, to unlock commercial authorizati
 16. Choose between Step and Doubao/Volcengine ASR without duplicate submissions (`yichen-asr`)
 17. Create authorized WeCom documents and manage todos, meetings, and schedules through the official CLI without controlling the desktop app (`yichen-wecom-operations`)
 18. Turn one public X Post or Thread URL into verified 3:4 image slices and a finished video that embeds complete native video visuals and preserves their original audio when present (`yichen-x-slicer`)
-19. Experimentally analyze a user-supplied, detached plaintext Windows Weixin snapshot locally and read-only, without process access, keys, or decryption (`yichen-wechat-windows-reader`)
-20. Orchestrate ChatGPT Pro research, architecture, and read-only project review while Codex alone edits and tests (`codex-chatgpt`)
-21. Generate and edit native Jianying drafts on a supported Apple Silicon Mac, with optional native MP4 export (`yichen-jianying-edit`; separate core checkout required)
+19. Orchestrate ChatGPT Pro research, architecture, and read-only project review while Codex alone edits and tests (`codex-chatgpt`)
 
 ## Included Skills
-
-### `yichen-jianying-edit`
-
-Public Skill entry for the separately installed Jianying Headless core (public source preview):
-
-- Separates the Agent Skill from the native draft-building/editing/export core.
-- Requires a separate checkout of [mcncarl/jianying-headless](https://github.com/mcncarl/jianying-headless), a separately installed supported Jianying version, and fixed source/runtime hashes.
-- Contains no official library, effect package, account data, user media, or ASR credential.
-- Defaults to draft delivery; native MP4 export is a separate explicitly requested step.
-- Compound draft registration remains blocked; frozen-snapshot export is not editor-save acceptance.
-
-See [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md). The Skill's original portions follow the existing personal-learning and non-commercial terms, with third-party licenses preserved. The core is a separate public source preview under its own personal-learning and non-commercial terms; publishing this entry does not change other directories' licenses.
-
-### `yichen-wechat-windows-reader`
-Experimental reader for an authorized, detached plaintext Windows Weixin SQLite snapshot explicitly supplied by the user:
-- Supports only the schema variants recognized by the validator and covered by synthetic fixtures; broad compatibility with real Weixin 4.x databases is not established
-- Requires a static, checkpointed snapshot with a fresh random UUIDv4 `snapshot_id` and no WAL/SHM/journal sidecars
-- Opens accepted databases read-only, rejects unsupported schemas and unsafe filesystem links, and queries recognized personal or business message shards
-- Uses snapshot-scoped opaque chat IDs and omits dedicated internal-username fields; message bodies and display text remain sensitive raw content and may still contain identities
-- Treats all snapshot text as untrusted data; an Agent must not execute embedded instructions, open links, or load remote resources
-- Uses LocalAppData only as the default local export location; inherited ACLs determine access, while external output and overwrite require current-command confirmation
-- Never accesses `Weixin.exe`, extracts keys, decrypts databases, discovers source data, controls the UI, or uses the network
-
-See [yichen-wechat-windows-reader/README.md](./yichen-wechat-windows-reader/README.md).
-
 
 ### `yichen-x-article-draft-uploader`
 Upload Obsidian/Markdown long-form articles to X Articles drafts:
@@ -100,17 +73,17 @@ Run two WeChat accounts simultaneously on macOS — no third-party tools:
 
 ### `yichen-wechat-local-vault`
 
-The unified CLI also supports experimental Windows plaintext snapshots through `snapshot --snapshot <directory>`. See the [snapshot guide](./yichen-wechat-local-vault/references/windows-snapshot.md).
-WeChat digital-asset assistant for macOS:
-- Decrypts WeChat Mac 4.x local SQLCipher databases (AES-256-CBC)
-- Extracts chats, Moments (`sns.db`), and Favorites (`favorite.db`)
-- Generates AI-powered chat digests, Moments reports, Favorites cleanup notes, customer follow-up drafts, and relationship review prompts
-- First-time onboarding introduces 3 categories and 9 playbooks: chat records, Moments, and Favorites
-- Configurable monitoring for groups, contacts, Moments targets, and Favorites cleanup preferences
-- First-time setup guided via frida key extraction
-- Typical triggers: "微信解析", "微信全量", "微信增量", "导出聊天", "朋友圈解析", "收藏夹整理", "客户跟进", "yichen-wechat-local-vault"
-- Requirements: macOS, WeChat Mac 4.x, Python 3.9+, `pycryptodome`, `zstandard`
-- See [yichen-wechat-local-vault/README.md](./yichen-wechat-local-vault/README.md) for full documentation
+Unified **full local WeChat data parsing on macOS and Windows**. Windows full-database capture, authenticated decryption, and row-by-row chat parsing are implemented; Favorites and Moments body parsing has also passed real-data acceptance through the bundled shared-function workflow.
+
+- macOS: full/incremental decryption, chats, Moments, Favorites, digests, and missed/reply-pending checks
+- Windows full local capture: `windows capture --scope all --source-id SOURCE_ID` covers all databases in the selected account's local data directory, including Favorites, Moments, media, and search indexes; the default capture scope remains chat databases
+- Windows chat queries: `snapshot --snapshot <directory>` validates, queries, searches, and exports the captured plaintext snapshot. Complete parsing is verified by comparing source rows, parsed rows, and output readback; individual query/export limits are separate
+- Windows Favorites/Moments bodies: use the existing pure functions and read-only snapshot workflow in the [Windows guide](./yichen-wechat-local-vault/references/windows-live.md#朋友圈和收藏正文解析); dedicated query subcommands are not yet packaged
+- Real acceptance covers full local capture, chat parsing, Favorites/Moments bodies, newly arriving messages, and export readback on Windows 11 build 26300 ARM64 with AMD64 WeChat 4.1.15.56 and CPython 3.12.10 AMD64
+- Scope: data already synced to the selected computer. Three known search-index integrity gaps are reported explicitly; media-file restoration, ordinary non-administrator execution, other client versions/architectures, and complete Mac workflow parity still require further work or verification
+- Does not operate the WeChat UI; login and test messages are performed manually by the user. Windows keys remain in memory; plaintext snapshots stay in private local storage
+- Mac dependencies: Python 3.9+, `pycryptodome`, `zstandard`; Windows uses CPython 3.12 AMD64, native Windows CNG, and the pinned `zstandard` dependency
+- See the [Skill README](./yichen-wechat-local-vault/README.md), [Windows full local parsing guide](./yichen-wechat-local-vault/references/windows-live.md), and [offline snapshot guide](./yichen-wechat-local-vault/references/windows-snapshot.md)
 
 ### Social fetchers integrated into `yichen-content-archive`
 The former standalone Douyin and Xiaohongshu fetchers now have one source of truth:
@@ -409,7 +382,7 @@ yichen-skills/
 - Python 3.9+
 - Dependencies:
   - X article drafts: `pip install playwright pycryptodome && python3 -m playwright install chromium`
-  - WeChat local vault: `pip install pycryptodome zstandard`
+  - WeChat local vault: macOS uses `pycryptodome zstandard`; Windows uses native CNG and [pinned CPython 3.12 AMD64 dependencies](./yichen-wechat-local-vault/references/windows-live.md)
   - WeChat dual open: `pip install Pillow`
   - Content archive (Douyin): `pip install playwright requests && python3 -m playwright install chromium`
   - Content archive (Xiaohongshu): `pip install requests`
@@ -477,12 +450,11 @@ codex plugin add yichen-grok-consult@yichen-skills
 
 ### D) Enable `yichen-wechat-local-vault`
 
-1. Install Python dependencies: `pip3 install pycryptodome zstandard`
-2. In Claude Code or Codex, say "微信解析", "导出聊天", or "收藏夹整理"
-3. First run will guide you through key extraction and choosing among the 9 playbooks
-4. If unsure, start with the recommended trio: group chat digest + Moments report + Favorites cleanup
-5. Subsequent runs generate the selected digest, report, or draft workflow
-6. See [yichen-wechat-local-vault/README.md](./yichen-wechat-local-vault/README.md) for details
+1. Choose the source first: macOS local vault, Windows local acquisition, or an explicit detached Windows plaintext snapshot.
+2. On macOS, install `pycryptodome zstandard`, then ask for chat parsing, export, Moments, or Favorites. The Skill guides the existing Mac setup and workflow selection.
+3. On Windows, use CPython 3.12 AMD64 and the pinned dependency in the [Windows acquisition guide](./yichen-wechat-local-vault/references/windows-live.md). Log in manually, select the authorized source with `windows discover`, and use `windows capture --scope all --source-id SOURCE_ID` for full local capture; the default `capture` scope selects only chat databases.
+4. Use the `snapshot` route for Windows query/search/export. It does not refresh data; capture again when current messages are required.
+5. See the [Skill README](./yichen-wechat-local-vault/README.md) for platform-specific commands, privacy paths, and tested permission/version limits.
 
 ### E) Enable the creator video workflow
 
