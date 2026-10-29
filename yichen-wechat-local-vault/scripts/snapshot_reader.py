@@ -22,6 +22,7 @@ import uuid
 
 from wechat_schema import message_columns as shared_message_columns
 from wechat_schema import message_table as shared_message_table
+from message_display import format_message_content, public_value
 
 try:
     import zstandard
@@ -211,7 +212,9 @@ def _related_sidecars(root: Path, database_paths: list[Path]) -> list[str]:
     return found
 
 
-def _read_manifest(root: Path) -> dict[str, str]:
+def _read_manifest(root: Path) -> dict:
+    if _path_exists_without_following(root / "capture-failed.json"):
+        raise ReaderError("This capture failed and is not a usable snapshot")
     path = _secure_existing_path(
         root / "snapshot-manifest.json",
         label="snapshot-manifest.json",
@@ -244,7 +247,27 @@ def _read_manifest(root: Path) -> dict[str, str]:
     account = raw.get("account_username", "")
     if not isinstance(account, str):
         raise ReaderError("snapshot-manifest.json account_username must be a string when present")
-    return {"snapshot_id": snapshot_id, "account_username": account}
+    profile = raw.get("profile", "full-snapshot-v1")
+    if profile not in ("full-snapshot-v1", "windows-chat-capture-v1"):
+        raise ReaderError("Unsupported snapshot profile")
+    gaps = raw.get("integrity_gaps", [])
+    known_indexes = {"contact/contact_fts.db", "favorite/favorite_fts.db", "message/message_fts.db"}
+    if not isinstance(gaps, list) or len(gaps) > len(known_indexes):
+        raise ReaderError("snapshot-manifest.json has invalid index integrity gaps")
+    gap_paths = set()
+    for gap in gaps:
+        if not isinstance(gap, dict) or not isinstance(gap.get("database"), str) or gap["database"] not in known_indexes:
+            raise ReaderError("snapshot-manifest.json has an unsupported index integrity gap")
+        gap_paths.add(gap["database"])
+    # Manifest text is untrusted: expose only fixed, recognized paths and state.
+    sanitized_gaps = [{"database": path, "check": "unverified"} for path in sorted(gap_paths)]
+    return {"snapshot_id": snapshot_id, "account_username": account, "profile": profile, "integrity_gaps": sanitized_gaps}
+
+
+def required_databases_for(manifest: dict) -> tuple[str, ...]:
+    if manifest["profile"] == "windows-chat-capture-v1":
+        return ("contact/contact.db", "session/session.db")
+    return REQUIRED_DATABASES
 
 
 def _quick_check(path: Path) -> str:
@@ -262,6 +285,8 @@ def validate_snapshot(root: Path) -> dict:
         "errors": [],
         "checked": [],
         "message_families": [],
+        "integrity_gaps": [],
+        "validation_scope": "recognized snapshot core; optional search indexes are not verified",
     }
     missing: list[str] = report["missing"]  # type: ignore[assignment]
     errors: list[str] = report["errors"]  # type: ignore[assignment]
@@ -273,17 +298,20 @@ def validate_snapshot(root: Path) -> dict:
         errors.append(str(exc))
         return report
 
+    required_databases = REQUIRED_DATABASES
     manifest_path = root / "snapshot-manifest.json"
     if not _path_exists_without_following(manifest_path):
         missing.append("snapshot-manifest.json")
     else:
         try:
-            _read_manifest(root)
+            manifest = _read_manifest(root)
+            required_databases = required_databases_for(manifest)
+            report["integrity_gaps"] = manifest["integrity_gaps"]
             checked.append("snapshot-manifest.json")
         except ReaderError as exc:
             errors.append(str(exc))
 
-    for rel in REQUIRED_DATABASES:
+    for rel in required_databases:
         path = root / rel
         if not _path_exists_without_following(path):
             missing.append(rel)
@@ -589,7 +617,7 @@ def iter_messages(
                     "type": int(row["local_type"] or 0) & 0xFFFFFFFF,
                     "sender": sender,
                     "direction": direction,
-                    "content": content,
+                    "content": format_message_content(row["local_type"], content),
                     "_sort_key": sort_key,
                 }
 
@@ -651,6 +679,8 @@ def _markdown_code_block(value: object) -> str:
 
 
 def render_markdown(chat: dict, messages: list[dict]) -> str:
+    chat = public_value(chat)
+    messages = public_value(messages)
     lines = [
         "# 微信快照导出",
         "",
@@ -673,7 +703,7 @@ def render_markdown(chat: dict, messages: list[dict]) -> str:
 def _snapshot_inputs(root: Path) -> list[Path]:
     inputs = [
         _secure_existing_path(root / rel, label=rel, expected="file", allowed_root=root)
-        for rel in REQUIRED_DATABASES
+        for rel in required_databases_for(_read_manifest(root))
     ]
     inputs.extend(message_databases(root))
     inputs.append(
@@ -761,7 +791,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _json_envelope(**fields) -> dict:
-    return {"trust": TRUST_MARKER, "content_warning": TRUST_WARNING, **fields}
+    return public_value({"trust": TRUST_MARKER, "content_warning": TRUST_WARNING, **fields})
 
 
 def _configure_utf8_stdio() -> None:

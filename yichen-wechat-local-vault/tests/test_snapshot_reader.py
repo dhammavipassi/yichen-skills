@@ -62,6 +62,22 @@ class SnapshotReaderTests(unittest.TestCase):
         self.assertEqual(data["trust"], "untrusted_snapshot_data")
         self.assertEqual([item["content"] for item in data["messages"]], ["来自 biz_message 的压缩关键词：星河"])
 
+    def test_index_integrity_gaps_are_visible_without_replaying_manifest_text(self):
+        path = self.root / "snapshot-manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["integrity_gaps"] = [{"database": "message/message_fts.db", "reason": "untrusted private note"}]
+        path.write_text(json.dumps(manifest))
+        result = self.run_cli("validate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["integrity_gaps"], [{"database": "message/message_fts.db", "check": "unverified"}])
+        self.assertNotIn("untrusted private note", result.stdout)
+        manifest["integrity_gaps"] = [{"database": "../outside.db"}]
+        path.write_text(json.dumps(manifest))
+        report = reader.validate_snapshot(self.root)
+        self.assertFalse(report["valid"])
+        self.assertTrue(any("unsupported index integrity gap" in error for error in report["errors"]))
+
     def test_resource_database_is_not_accepted_as_a_message_shard(self):
         root, _ = self.variant("resource-only", message_mode="resource_only")
         report = reader.validate_snapshot(root)

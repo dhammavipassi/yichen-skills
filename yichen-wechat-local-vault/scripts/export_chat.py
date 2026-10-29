@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 import sqlite3
 import zstandard as zstd
+from message_display import HIDDEN_ID, format_message_content, public_value, redact_text
 
 CONFIG_FILE = Path("~/.config/wechat-local-vault.json").expanduser()
 DEFAULT_VAULT_DIR = Path("~/Library/Application Support/wechat-local-vault").expanduser()
@@ -29,9 +30,12 @@ DEFAULT_DECRYPTED_DIR = DEFAULT_VAULT_DIR / "decrypted/current"
 DEFAULT_EXPORTS_DIR = Path("~/Documents/wechat-local-vault/exports").expanduser()
 EXPORT_STATE_FILE = DEFAULT_VAULT_DIR / "state/export_chat_state.json"
 
-def message_db_paths(decrypted_dir: Path) -> list[Path]:
-    """扫描全部消息库 message_*.db，兼容 WCDB 按编号分库（0..N）。"""
-    return sorted((decrypted_dir / "message").glob("message_*.db"))
+MESSAGE_DBS = [
+    "message/message_0.db",
+    "message/message_1.db",
+    "message/message_2.db",
+    "message/message_3.db",
+]
 
 TYPE_LABELS = {
     1: "文字",
@@ -123,7 +127,7 @@ def contact_display(contact: dict) -> str:
     return "unknown"
 
 
-def find_contact(contacts: list[dict], query: str) -> dict:
+def find_contact(contacts: list[dict], query: str, *, include_identifiers: bool = False) -> dict:
     q = query.lower()
     exact = []
     fuzzy = []
@@ -140,7 +144,8 @@ def find_contact(contacts: list[dict], query: str) -> dict:
     if len(matches) > 1:
         print("Multiple contacts matched; using the first one:")
         for item in matches[:10]:
-            print(f"  - {item.get('username') or item.get('userName')} | {contact_display(item)}")
+            identifier = (item.get('username') or item.get('userName')) if include_identifiers else HIDDEN_ID
+            print(f"  - {identifier} | {redact_text(contact_display(item), include_identifiers=include_identifiers)}")
     return matches[0]
 
 
@@ -174,31 +179,16 @@ def table_exists(con: sqlite3.Connection, table: str) -> bool:
 
 
 def normalize_content(local_type: int, content: str) -> str:
-    if local_type == 34:
-        match = re.search(r'voicelength="(\d+)"', content)
-        if match:
-            seconds = int(match.group(1)) / 1000
-            return f"[语音消息，约 {seconds:.1f} 秒]"
-        return "[语音消息]"
-    if local_type == 3:
-        return "[图片]"
-    if local_type == 43:
-        return "[视频]"
-    if local_type == 47:
-        return "[表情]"
-    if local_type == 48:
-        return "[位置]"
-    if local_type == 42:
-        return "[名片]"
-    if local_type not in (1, 49, 10000):
-        return f"[{TYPE_LABELS.get(local_type, f'类型{local_type}')}] {content}".strip()
-    return content.strip()
+    return format_message_content(local_type, content)
 
 
 def collect_messages(decrypted_dir: Path, chat_id: str, display: str, since_ts: int | None) -> list[dict]:
     table = message_table_for(chat_id)
     rows: list[dict] = []
-    for db_path in message_db_paths(decrypted_dir):
+    for rel in MESSAGE_DBS:
+        db_path = decrypted_dir / rel
+        if not db_path.exists():
+            continue
         con = connect(db_path)
         try:
             if not table_exists(con, table):
@@ -242,7 +232,9 @@ def collect_messages(decrypted_dir: Path, chat_id: str, display: str, since_ts: 
     return deduped
 
 
-def render_markdown(chat_id: str, display: str, rows: list[dict], mode: str, since_ts: int | None) -> str:
+def render_markdown(chat_id: str, display: str, rows: list[dict], mode: str, since_ts: int | None, *, include_identifiers: bool = False) -> str:
+    display = redact_text(display, include_identifiers=include_identifiers)
+    rows = public_value(rows, include_identifiers=include_identifiers)
     if rows:
         time_range = f"{rows[0]['time']} 至 {rows[-1]['time']}"
     else:
@@ -252,7 +244,7 @@ def render_markdown(chat_id: str, display: str, rows: list[dict], mode: str, sin
         "",
         "## 导出信息",
         "",
-        f"- 会话 ID：{chat_id}",
+        f"- 会话 ID：{chat_id if include_identifiers else HIDDEN_ID}",
         f"- 模式：{mode}",
         f"- 起始时间：{datetime.fromtimestamp(since_ts).strftime('%Y-%m-%d %H:%M:%S') if since_ts else '全部'}",
         f"- 消息数：{len(rows)}",
@@ -277,6 +269,7 @@ def main() -> None:
     parser.add_argument("--exports-dir", help="override export directory")
     parser.add_argument("--output", help="explicit output markdown path")
     parser.add_argument("--write-empty", action="store_true", help="write a report even if no new messages")
+    parser.add_argument("--include-identifiers", action="store_true", help="explicitly retain account identifiers; message XML and credentials remain hidden")
     args = parser.parse_args()
 
     if not args.contact and not args.chat_id:
@@ -284,7 +277,7 @@ def main() -> None:
 
     decrypted_dir, exports_dir = resolve_dirs(args)
     contacts = load_contacts(decrypted_dir)
-    contact = {"username": args.chat_id} if args.chat_id else find_contact(contacts, args.contact)
+    contact = {"username": args.chat_id} if args.chat_id else find_contact(contacts, args.contact, include_identifiers=args.include_identifiers)
     chat_id = str(contact.get("username") or contact.get("userName"))
     display = contact_display(contact)
 
@@ -296,7 +289,7 @@ def main() -> None:
 
     rows = collect_messages(decrypted_dir, chat_id, display, since_ts)
     if not rows and not args.write_empty:
-        print(f"No messages to export for {display}.")
+        print(f"No messages to export for {redact_text(display, include_identifiers=args.include_identifiers)}.")
         return
 
     if args.output:
@@ -305,13 +298,13 @@ def main() -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = exports_dir / "chats" / safe_name(display) / f"{stamp}-{args.mode}.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_markdown(chat_id, display, rows, args.mode, since_ts), encoding="utf-8")
+    out_path.write_text(render_markdown(chat_id, display, rows, args.mode, since_ts, include_identifiers=args.include_identifiers), encoding="utf-8")
 
     if rows:
         state[state_key] = {"last_ts": max(item["ts"] for item in rows), "display": display}
         save_json(EXPORT_STATE_FILE, state)
     print(out_path)
-    print(f"Exported {len(rows)} messages for {display}.")
+    print(f"Exported {len(rows)} messages for {redact_text(display, include_identifiers=args.include_identifiers)}.")
 
 
 if __name__ == "__main__":

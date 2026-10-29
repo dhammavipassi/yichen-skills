@@ -152,21 +152,12 @@ This repository references and adapts ideas/workflows from external projects.
   - Users must identify the runtime's distributor and check its applicable license, service terms, redistribution rights, and version-specific notices before installation or use.
   - This repository's license and this notice are not a license grant for the external CLI.
 
-## 13) Jianying Headless external core
-
-- Project: https://github.com/mcncarl/jianying-headless (public source preview, installed separately).
-- Skill: `yichen-jianying-edit`; this collection contains only the Skill, its wrappers and speech-plan helpers.
-- The separate core preserves its jy-draftc MIT interface attribution and historical pyJianYingDraft Apache-2.0 relationship. It does not claim clean-room provenance.
-- No Jianying application, official library, native resource package, account data, user media, ASR executor or service credential is distributed here.
-- The Skill and core's original portions use personal-learning and non-commercial terms; upstream MIT / Apache-2.0 licenses remain in effect for their respective portions. This collection's license grants no rights to the separate core, proprietary editor, native materials or paid services; the core is governed by its own terms.
-- This collection distributes only this Skill's instructions, entrypoint and speech-plan helpers. The core is distributed separately under its own terms, and existing collection directories' licenses are unchanged.
-
 ## Notes
 
 - This repository maintains its own license (`LICENSE`) for original contributions. It is personal-learning and non-commercial only.
 - The upstream projects listed above retain their original licenses and copyrights.
 - Upstream licenses and notices should be preserved when redistributing derived works.
-- `yichen-wechat-local-vault` is an independent implementation that adapts specific technical approaches from `wx-favorites-report`. It does not contain any code directly copied from the upstream project.
+- `yichen-wechat-local-vault` adapts Mac technical approaches from `wx-favorites-report` and includes selected MIT-licensed Windows source adaptations from `TANGandXUE/wcdb-key-tool` and `freanocank/wechat-decrypt`. Pinned commits, reviewed source hashes, retained license texts, and the exact adaptation scope are recorded in [Windows acquisition provenance](./yichen-wechat-local-vault/references/windows-live/PROVENANCE.md). Existing snapshot provenance remains in [Windows snapshot provenance](./yichen-wechat-local-vault/references/windows-snapshot/PROVENANCE.md).
 - `yichen-wechat-mp-batch-exporter` references workflows from `wechat-article-exporter` and `wxdown-service`, but does not include their source code, credentials, cached browser data, or downloaded article archives.
 - `yichen-x-article-draft-uploader` references workflow and Markdown parsing ideas from `wshuyi/x-article-publisher-skill`; it stores no real credentials in source control and writes exported X cookies only to a private local file with restricted permissions.
 - The broader skill packaging conventions reference public Claude skill community practices, including JimLiu/baoyu-skills.
