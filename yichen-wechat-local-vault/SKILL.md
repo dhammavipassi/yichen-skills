@@ -147,6 +147,13 @@ python3 {{SKILL_DIR}}/scripts/extract_keys.py --list-dbs
 python3 {{SKILL_DIR}}/scripts/extract_keys.py --match-only --targets all --reuse-log
 ```
 
+锁屏、无人值守或签名副本无法交互、frida 抓不到 key 时，如果本机 chatlog 正在解密同一账号，可从它的 `data_key` 派生（PBKDF2-SHA512/256000，按库 salt 校验；不打印 key）：
+
+```bash
+python3 {{SKILL_DIR}}/scripts/import_keys_from_chatlog.py
+# 自动按 vault 配置的 wxid 找运行中的 chatlog 容器；多容器时显式 --container
+```
+
 首次全量抓 key。只在需要抓新 key 时使用；不要碰第二微信：
 
 ```bash

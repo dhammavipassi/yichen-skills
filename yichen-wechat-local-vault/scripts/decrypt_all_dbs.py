@@ -369,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Check before --clean or any refresh: an unreadable source must not cost a copy.
     rels = sorted({rel for rel in map(key_name_to_rel, keys) if rel})
+    if not rels:
+        print(f"ABORT: no usable database keys found in {KEYS_FILE}", file=sys.stderr)
+        return 1
     denied = denied_sources([(rel, db_base / rel) for rel in rels])
     if denied:
         return abort_unreadable(args, keys, out_base, denied)
@@ -423,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
             failed += 1
             records.append(record)
 
-    update_config_paths(out_base)
+    if out_base.resolve() == DEFAULT_OUTPUT_DIR.expanduser().resolve():
+        update_config_paths(out_base)
     save_json(DECRYPT_STATE_FILE, state)
     if not args.no_manifest:
         manifest_path = write_manifest(out_base, records)
@@ -432,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     if stale:
         print(f"Stale: {len(stale)} previous copies kept but not refreshed: {', '.join(stale)}")
     print(f"Done: {passed} decrypted, {failed} failed, {skipped} skipped")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

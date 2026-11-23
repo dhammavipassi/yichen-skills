@@ -77,12 +77,15 @@ def snapshot_path(value: str | None) -> Path:
     return path
 
 
-def parse_time(value: str | None) -> int | None:
+def parse_time(value: str | None, *, end_of_day: bool = False) -> int | None:
     if not value:
         return None
     for form in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
-            return int(datetime.strptime(value, form).timestamp())
+            dt = datetime.strptime(value, form)
+            if form == "%Y-%m-%d" and end_of_day:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            return int(dt.timestamp())
         except ValueError:
             pass
     raise SystemExit(f"无法解析时间: {value}")
@@ -459,7 +462,7 @@ def messages_for_args(args, *, with_media: bool | None = None) -> tuple[dict | N
         snapshot,
         session["conversation_id"] if session else None,
         parse_time(args.start),
-        parse_time(args.end),
+        parse_time(args.end, end_of_day=True),
         getattr(args, "keyword", None),
         args.limit,
         media_cache_for_args(args) if with_media else None,
