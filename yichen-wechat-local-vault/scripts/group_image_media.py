@@ -1,4 +1,8 @@
-"""Local Mac WeChat group-image attachment lookup, preview decoding, and OCR.
+"""Local Mac WeChat chat-image attachment lookup, preview decoding, and OCR.
+
+Private and group chats share one layout: msg/attach/<md5(chat username)>/<YYYY-MM>/Img/
+<hash>[_t|_h].dat, where <hash> comes from the message row's packed_info_data (see
+extract_image_md5), not from the md5 attribute of the message XML.
 
 This module reads already authorized local files. It does not open WeChat, read
 message tables, contact a network service, or depend on a sidecar application.
@@ -8,6 +12,7 @@ message scope before calling these helpers.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +20,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import time
 
 
@@ -43,9 +49,13 @@ def image_key_candidates(source_config: Path, db_base: Path) -> list[dict]:
 
     codes: set[int] = set()
     for directory in directories:
-        if not directory.is_dir():
+        try:
+            if not directory.is_dir():
+                continue
+            entries = list(directory.iterdir())
+        except OSError:
             continue
-        for entry in directory.iterdir():
+        for entry in entries:
             match = re.fullmatch(r"key_(\d+)(?:_.*)?", entry.name)
             if match:
                 codes.add(int(match.group(1)))
@@ -56,7 +66,127 @@ def image_key_candidates(source_config: Path, db_base: Path) -> list[dict]:
     ]
 
 
+def _safe_kvcomm_dirs(attach_dir: Path | None = None, extra_kvcomm_dirs: tuple[Path, ...] = ()) -> list[Path]:
+    """Return bounded, non-symlink kvcomm directories on Windows or macOS."""
+    candidates: list[Path] = [Path(d) for d in extra_kvcomm_dirs if d]
+    if sys.platform == "win32":
+        for env_name in ("APPDATA", "LOCALAPPDATA"):
+            base_val = os.environ.get(env_name, "").strip()
+            if not base_val:
+                continue
+            xw = Path(base_val) / "Tencent" / "xwechat"
+            try:
+                if xw.is_symlink() or not xw.is_dir():
+                    continue
+                for child in sorted(xw.iterdir()):
+                    if child.is_symlink() or not child.is_dir():
+                        continue
+                    kv = child / "kvcomm"
+                    if not kv.is_symlink() and kv.is_dir():
+                        candidates.append(kv)
+                radium_ilink = xw / "radium" / "ilink"
+                if not radium_ilink.is_symlink() and radium_ilink.is_dir():
+                    for child in sorted(radium_ilink.iterdir()):
+                        if child.is_symlink() or not child.is_dir():
+                            continue
+                        kv = child / "kvcomm"
+                        if not kv.is_symlink() and kv.is_dir():
+                            candidates.append(kv)
+            except OSError:
+                continue
+    elif sys.platform == "darwin":
+        if attach_dir is not None:
+            parts = attach_dir.parts
+            if "xwechat_files" in parts:
+                index = parts.index("xwechat_files")
+                documents = Path(*parts[:index])
+                candidates.extend((documents / "app_data/net/kvcomm", documents / "xwechat/net/kvcomm"))
+                if index > 1:
+                    container = Path(*parts[: index - 1])
+                    candidates.extend((
+                        container / "Library/Application Support/com.tencent.xinWeChat/xwechat/net/kvcomm",
+                        container / "Library/Application Support/com.tencent.xinWeChat/net/kvcomm",
+                    ))
+        candidates.append(Path.home() / "Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/net/kvcomm")
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for directory in candidates:
+        try:
+            if directory.is_symlink() or not directory.is_dir():
+                continue
+            key = os.path.normcase(str(directory.resolve()))
+        except OSError:
+            continue
+        if key not in seen:
+            seen.add(key)
+            unique.append(directory)
+    return unique
+
+
+def kvcomm_image_key_candidates(
+    account_hint: str = "",
+    *,
+    attach_dir: Path | None = None,
+    extra_kvcomm_dirs: tuple[Path, ...] = (),
+) -> list[dict]:
+    """Derive WeChat 4.x V2 image AES/XOR key candidates from local kvcomm key_<code_int>_* filenames."""
+    raw_names: list[str] = []
+    if account_hint.strip():
+        raw_names.append(account_hint.strip())
+    if attach_dir is not None:
+        # Standard WeChat 4.x layout: <account_dir>/msg/attach
+        try:
+            if attach_dir.name.casefold() == "attach" and attach_dir.parent.name.casefold() == "msg":
+                acct_name = attach_dir.parent.parent.name.strip()
+                if acct_name:
+                    raw_names.append(acct_name)
+        except OSError:
+            pass
+
+    names: list[str] = []
+    for raw_name in raw_names:
+        # WeChat 4.x account folders append a 4-hex suffix: <account>_<4hex> (for both wxid_* and custom IDs).
+        stripped = re.sub(r"_[0-9a-fA-F]{4}$", "", raw_name)
+        if stripped and stripped != raw_name and stripped not in names:
+            names.append(stripped)
+        if raw_name.startswith("wxid_") and raw_name.count("_") > 1:
+            base_wxid = "_".join(raw_name.split("_", 2)[:2])
+            if base_wxid and base_wxid not in names:
+                names.append(base_wxid)
+        if raw_name and raw_name not in names:
+            names.append(raw_name)
+    if not names:
+        return []
+
+    codes: set[int] = set()
+    for directory in _safe_kvcomm_dirs(attach_dir=attach_dir, extra_kvcomm_dirs=extra_kvcomm_dirs):
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            match = re.fullmatch(r"key_(\d+)(?:_.*)?", entry.name)
+            if match:
+                codes.add(int(match.group(1)))
+
+    # Try non-zero account codes before key_0 (which is usually a generic pre-login counter).
+    ordered_codes = sorted(codes, key=lambda c: (c == 0, c))
+    results: list[dict] = []
+    seen_keys: set[tuple[bytes, int]] = set()
+    for code in ordered_codes:
+        xor_key = code & 255
+        for name in names:
+            aes_key = hashlib.md5(f"{code}{name}".encode("utf-8")).hexdigest()[:16].encode("ascii")
+            pair = (aes_key, xor_key)
+            if pair not in seen_keys:
+                seen_keys.add(pair)
+                results.append({"aesKey": aes_key, "xorKey": xor_key, "source": "kvcomm"})
+    return results
+
+
 def extract_image_md5(data: bytes) -> str | None:
+    """Attachment file hash from an image message's packed_info_data bytes."""
     match = re.search(rb"(?i)(?:^|[^0-9a-f])([0-9a-f]{32})(?:$|[^0-9a-f])", data)
     return match.group(1).decode("ascii").lower() if match else None
 
@@ -67,7 +197,7 @@ def dat_file_priority(path: Path) -> tuple[bool, str]:
 
 
 class AttachmentFinder:
-    """Index only the hash directory of each authorized group, once per group."""
+    """Index only the hash directory of each authorized chat (private or group), once per chat."""
 
     def __init__(self, root: Path, *, max_seconds_per_chat: float = 15, max_files_per_chat: int = 300_000):
         self.root = root
@@ -199,7 +329,9 @@ def ocr_with_macos_vision(path: Path) -> dict:
         from Vision import VNImageRequestHandler, VNRecognizeTextRequest
 
         request = VNRecognizeTextRequest.alloc().init()
-        request.setRecognitionLevel_(1)
+        # 0 = VNRequestTextRecognitionLevelAccurate. The fast level (1) only reads
+        # Latin scripts and turns Chinese screenshots into garbage.
+        request.setRecognitionLevel_(0)
         request.setUsesLanguageCorrection_(True)
         request.setRecognitionLanguages_(["zh-Hans", "en-US"])
         handler = VNImageRequestHandler.alloc().initWithURL_options_(NSURL.fileURLWithPath_(str(path)), None)
@@ -216,11 +348,155 @@ def ocr_with_macos_vision(path: Path) -> dict:
         return {"engine": "Vision", "text": "", "error": type(error).__name__}
 
 
+_WINDOWS_WINRT_OCR_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+
+$ImgPath = [System.Environment]::GetEnvironmentVariable('WECHAT_OCR_IMAGE_PATH')
+if (-not $ImgPath -or -not (Test-Path -LiteralPath $ImgPath)) {
+    @{ ok = $false; error = 'file_not_found'; languages = @() } | ConvertTo-Json -Compress
+    exit 0
+}
+
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+})[0]
+function Await-WinRT($op, $resultType) {
+    $task = $asTaskGeneric.MakeGenericMethod($resultType).Invoke($null, @($op))
+    $task.Wait()
+    return $task.Result
+}
+
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrResult, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
+
+$avail = @([Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages)
+$availTags = @($avail | ForEach-Object { $_.LanguageTag })
+$chosen = $null
+foreach ($pref in @('zh-Hans-CN', 'zh-CN', 'zh-Hans', 'zh-Hant-TW', 'zh-Hant-HK')) {
+    $m = $avail | Where-Object { $_.LanguageTag -ieq $pref } | Select-Object -First 1
+    if ($m) { $chosen = $m; break }
+}
+if ($chosen) {
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($chosen)
+} else {
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+}
+if (-not $engine -and $avail.Count -gt 0) {
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($avail[0])
+}
+if (-not $engine) {
+    @{ ok = $false; error = 'no_ocr_language'; available_languages = $availTags } | ConvertTo-Json -Compress
+    exit 0
+}
+
+$file = Await-WinRT ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImgPath)) ([Windows.Storage.StorageFile])
+$stream = Await-WinRT ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+try {
+    $decoder = Await-WinRT ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $softBmp = Await-WinRT ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    $ocrResult = Await-WinRT ($engine.RecognizeAsync($softBmp)) ([Windows.Media.Ocr.OcrResult])
+    $lines = @($ocrResult.Lines | ForEach-Object { $_.Text })
+    @{
+        ok = $true
+        language = $engine.RecognizerLanguage.LanguageTag
+        available_languages = $availTags
+        text = ($lines -join "`n")
+    } | ConvertTo-Json -Compress
+} finally {
+    $stream.Dispose()
+}
+"""
+
+
+def ocr_with_windows_winrt(path: Path) -> dict:
+    """Recognize image text via Windows 10/11 built-in Windows.Media.Ocr (zero third-party deps)."""
+    if sys.platform != "win32":
+        return {"engine": "WinRT", "text": "", "error": "windows_only"}
+    try:
+        encoded = base64.b64encode(_WINDOWS_WINRT_OCR_SCRIPT.encode("utf-16le")).decode("ascii")
+        env = os.environ.copy()
+        env["WECHAT_OCR_IMAGE_PATH"] = str(path.resolve())
+        kwargs: dict = {}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=30,
+            check=False,
+            **kwargs,
+        )
+        raw = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not raw:
+            return {"engine": "WinRT", "text": "", "error": f"exit-{proc.returncode}"}
+        payload = json.loads(raw.splitlines()[-1])
+        langs = payload.get("available_languages") or []
+        if not payload.get("ok"):
+            return {
+                "engine": "WinRT",
+                "text": "",
+                "error": str(payload.get("error") or "winrt_failed"),
+                "available_languages": langs,
+            }
+        lang = str(payload.get("language") or "")
+        out: dict = {
+            "engine": "WinRT",
+            "language": lang,
+            "available_languages": langs,
+            "text": _normalize_ocr_text(str(payload.get("text") or "")),
+        }
+        if not any(tag.lower().startswith("zh") for tag in langs):
+            out["note"] = (
+                "系统未安装中文 OCR 语言包（当前仅 "
+                + (", ".join(langs) or "无")
+                + "）；可在管理员 PowerShell 运行 Add-WindowsCapability -Online -Name 'Language.OCR~~~zh-CN~0.0.1.0' 安装简体中文包，或安装 Tesseract"
+            )
+        return out
+    except Exception as error:
+        return {"engine": "WinRT", "text": "", "error": type(error).__name__}
+
+
+def _find_tesseract_cmd() -> str:
+    import shutil
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    if sys.platform == "win32":
+        for env_key, rel in (
+            ("ProgramFiles", r"Tesseract-OCR\tesseract.exe"),
+            ("ProgramFiles(x86)", r"Tesseract-OCR\tesseract.exe"),
+            ("LOCALAPPDATA", r"Programs\Tesseract-OCR\tesseract.exe"),
+        ):
+            base = os.environ.get(env_key, "").strip()
+            if base:
+                cand = Path(base) / rel
+                if cand.is_file():
+                    return str(cand)
+    return "tesseract"
+
+
 def ocr_with_tesseract(path: Path) -> dict:
     try:
+        kwargs: dict = {}
+        if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
-            ["tesseract", str(path), "stdout", "-l", "chi_sim+eng", "--psm", "11"],
-            capture_output=True, text=True, timeout=30, check=False,
+            [_find_tesseract_cmd(), str(path), "stdout", "-l", "chi_sim+eng", "--psm", "11"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
+            **kwargs,
         )
         return {"engine": "Tesseract",
                 "text": _normalize_ocr_text(result.stdout) if result.returncode == 0 else "",
@@ -230,5 +506,17 @@ def ocr_with_tesseract(path: Path) -> dict:
 
 
 def ocr_image_with_local_engine(path: Path) -> dict:
-    result = ocr_with_macos_vision(path)
-    return result if result.get("text") else ocr_with_tesseract(path)
+    if sys.platform == "darwin":
+        result = ocr_with_macos_vision(path)
+        return result if result.get("text") else ocr_with_tesseract(path)
+    if sys.platform == "win32":
+        result = ocr_with_windows_winrt(path)
+        # If WinRT has a Chinese OCR pack installed and recognized text, use it directly.
+        if result.get("text") and not result.get("note"):
+            return result
+        # If WinRT failed or lacks a Chinese pack (e.g. English/LTSC Windows), prefer Tesseract chi_sim+eng when available.
+        tess = ocr_with_tesseract(path)
+        if tess.get("text"):
+            return tess
+        return result if not result.get("error") else tess
+    return ocr_with_tesseract(path)

@@ -430,6 +430,82 @@ class DecryptAllDbsTests(unittest.TestCase):
         self.assertEqual(self.bodies("message/message_0.db"), ["message v2"])
         self.assertEqual(self.leftovers(), [])
 
+    def test_empty_keys_aborts_with_distinct_message_and_keeps_copies(self):
+        self.seed()
+        outputs = tree_digest(self.out)
+        state, config = self.state_file.read_bytes(), self.config_file.read_bytes()
+
+        for payload in ({}, {"__meta": "only metadata"}):
+            with self.subTest(payload=payload):
+                self.keys_file.write_text(json.dumps(payload))
+                code, out, err = self.run_main("--clean")
+                self.assertEqual(code, decrypt.NO_KEYS_EXIT_CODE)
+                self.assertIn("no database keys", err)
+                self.assertIn("Aborted (no keys)", out)
+                self.assertNotIn("0 decrypted, 0 failed, 0 skipped", out)
+                self.assertEqual(tree_digest(self.out), outputs)
+                self.assertEqual(self.state_file.read_bytes(), state)
+                self.assertEqual(self.config_file.read_bytes(), config)
+                manifest = self.manifest()
+                self.assertTrue(manifest["aborted"])
+                self.assertEqual(manifest["abort_reason"], "no database keys configured")
+                self.assertEqual(manifest["database_count"], 0)
+
+    def test_status_reports_not_ready_when_dir_has_zero_readable_databases(self):
+        def run_status(target: Path, fmt: str) -> str:
+            stdout = io.StringIO()
+            with mock.patch.object(vault_cli, "load_config", return_value={}), redirect_stdout(stdout):
+                vault_cli.main(["--decrypted-dir", str(target), "status", "--format", fmt])
+            return stdout.getvalue()
+
+        missing_dir = self.root / "missing-vault"
+        self.assertIn("状态: 不存在", run_status(missing_dir, "text"))
+        missing_json = json.loads(run_status(missing_dir, "json"))
+        self.assertFalse(missing_json["exists"])
+        self.assertFalse(missing_json["ready"])
+        self.assertEqual(missing_json["available_count"], 0)
+
+        empty_dir = self.root / "empty-vault"
+        empty_dir.mkdir()
+        self.assertIn("状态: 尚未就绪：没有可读数据库", run_status(empty_dir, "text"))
+        empty_json = json.loads(run_status(empty_dir, "json"))
+        self.assertTrue(empty_json["exists"])
+        self.assertFalse(empty_json["ready"])
+        self.assertEqual(empty_json["status"], "empty")
+        self.assertEqual(empty_json["available_count"], 0)
+
+        corrupt_db = empty_dir / "contact/contact.db"
+        corrupt_db.parent.mkdir(parents=True)
+        corrupt_db.write_bytes(b"not a valid sqlite database" * 10)
+        self.assertIn("状态: 尚未就绪：没有可读数据库", run_status(empty_dir, "text"))
+        self.assertFalse(json.loads(run_status(empty_dir, "json"))["ready"])
+
+        self.seed()
+        self.assertIn("状态: 可用", run_status(self.out, "text"))
+        ready_json = json.loads(run_status(self.out, "json"))
+        self.assertTrue(ready_json["ready"])
+        self.assertEqual(ready_json["status"], "ready")
+        self.assertGreaterEqual(ready_json["available_count"], 2)
+
+    def test_decrypt_db_preserves_sqlite_lock_byte_page(self):
+        self.assertEqual(decrypt.LOCK_BYTE_PAGE, 262145)
+        self.assertEqual((decrypt.LOCK_BYTE_PAGE - 1) * decrypt.PAGE_SIZE, 0x40000000)
+        plain = plain_database(self.root / "plain-lock.db", "before lock page")
+        cipher = encrypt_like_wechat(plain, KEY_A)
+        lock_page_number = len(plain) // PAGE + 1
+        tail_plain = b"Z" * (PAGE - RESERVE) + bytes(RESERVE)
+        tail_cipher = encrypt_like_wechat(plain + tail_plain, KEY_A)[-PAGE:]
+        with_lock_cipher = cipher + bytes(PAGE) + tail_cipher
+        src = self.root / "with-lock-cipher.db"
+        out = self.root / "with-lock-plain.db"
+        src.write_bytes(with_lock_cipher)
+        with mock.patch.object(decrypt, "LOCK_BYTE_PAGE", lock_page_number):
+            decrypt.decrypt_db(src, out, KEY_A.hex())
+        decrypted = out.read_bytes()
+        self.assertEqual(decrypted[: len(plain)], plain)
+        self.assertEqual(decrypted[len(plain) : len(plain) + PAGE], bytes(PAGE))
+        self.assertEqual(decrypted[len(plain) + PAGE :], tail_plain)
+
 
 if __name__ == "__main__":
     unittest.main()

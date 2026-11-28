@@ -1,0 +1,91 @@
+name: WeChat local vault (Windows & macOS)
+
+on:
+  push:
+    paths:
+      - 'yichen-wechat-local-vault/**'
+      - '.github/workflows/wechat-local-vault.yml'
+  pull_request:
+    paths:
+      - 'yichen-wechat-local-vault/**'
+      - '.github/workflows/wechat-local-vault.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wechat-local-vault-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-native:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up CPython 3.12 AMD64
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Install locked Windows runtime dependencies only (no pycryptodome)
+        run: |
+          python -m pip install --require-hashes --requirement yichen-wechat-local-vault/references/windows-snapshot/requirements.lock
+
+      - name: Compile all Python scripts and tests
+        working-directory: yichen-wechat-local-vault
+        shell: pwsh
+        run: |
+          python -m py_compile (Get-ChildItem scripts/*.py, tests/*.py | ForEach-Object { $_.FullName })
+
+      - name: Run Windows native CNG, ACL, ProcessReader, incremental capture, and Mac-parity suite
+        working-directory: yichen-wechat-local-vault
+        shell: pwsh
+        env:
+          PYTHONPATH: tests
+          YICHEN_WECHAT_TEST_ROOT: ${{ runner.temp }}\wechat-windows-tests
+        run: |
+          python -m unittest -v test_windows_live test_windows_parity test_snapshot_reader test_vault_integration test_message_display.SafeMessageTests
+
+      - name: Verify real Windows CLI discover and Mac-command isolation
+        working-directory: yichen-wechat-local-vault
+        shell: python
+        run: |
+          import json, subprocess, sys
+          sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+          disc = subprocess.run([sys.executable, "scripts/vault_cli.py", "windows", "discover"], capture_output=True, text=True, encoding="utf-8")
+          print("windows discover rc:", disc.returncode, "stdout:", disc.stdout.strip(), "stderr:", disc.stderr.strip())
+          assert disc.returncode == 0, disc.stderr
+          payload = json.loads(disc.stdout)
+          assert payload["memory_read"] is False and isinstance(payload["accounts"], list) and isinstance(payload["weixin_processes"], list)
+          mac = subprocess.run([sys.executable, "scripts/vault_cli.py", "status"], capture_output=True, text=True, encoding="utf-8")
+          print("mac status on win32 rc:", mac.returncode, "stderr:", mac.stderr.strip())
+          assert mac.returncode == 2 and "snapshot" in mac.stderr
+
+  macos-contracts:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Mac runtime dependencies
+        run: |
+          python -m pip install zstandard==0.25.0 pycryptodome
+
+      - name: Compile and run full test suite on macOS
+        working-directory: yichen-wechat-local-vault
+        env:
+          YICHEN_WECHAT_TEST_ROOT: ${{ runner.temp }}/wechat-macos-tests
+        run: |
+          python -m py_compile scripts/*.py tests/*.py
+          python -m unittest discover -s tests -p 'test_*.py' -v

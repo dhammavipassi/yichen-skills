@@ -13,6 +13,14 @@ import sys
 
 PAGE = 4096
 RESERVE = 80
+LOCK_BYTE_OFFSET = 0x40000000
+LOCK_BYTE_PAGE = LOCK_BYTE_OFFSET // PAGE + 1  # SQLite 1 GiB lock-byte page (262145)
+ZERO_PAGE = bytes(PAGE)
+
+
+def is_sqlite_lock_byte_page(page: bytes, number: int) -> bool:
+    """SQLite/SQLCipher leaves the 4 KiB page at 0x40000000 (page 262145) untouched and all-zero."""
+    return number == LOCK_BYTE_PAGE and len(page) == PAGE and page == ZERO_PAGE
 
 
 def mac_key(key: bytes, salt: bytes) -> bytes:
@@ -34,11 +42,14 @@ def verify_enc_key(key: bytes, page: bytes) -> bool:
 
 
 class CngAES:
-    """One algorithm/key handle, independent IV for every page."""
-    def __init__(self, key: bytes):
+    """One algorithm/key handle, independent IV for CBC or None for ECB."""
+    def __init__(self, key: bytes, *, chaining_mode: str = "ChainingModeCBC"):
         if sys.platform != "win32":
             raise RuntimeError("Windows CNG requires Windows")
+        if chaining_mode not in ("ChainingModeCBC", "ChainingModeECB"):
+            raise ValueError("Unsupported AES chaining mode")
         from ctypes import wintypes as w
+        self.chaining_mode = chaining_mode
         self.api = c.WinDLL("bcrypt", use_last_error=True)
         declarations = {
             "BCryptOpenAlgorithmProvider": [c.POINTER(w.HANDLE), w.LPCWSTR, w.LPCWSTR, w.ULONG],
@@ -55,7 +66,7 @@ class CngAES:
         self.algorithm, self.key = w.HANDLE(), w.HANDLE()
         self._check(self.api.BCryptOpenAlgorithmProvider(c.byref(self.algorithm), "AES", None, 0))
         try:
-            mode = c.create_unicode_buffer("ChainingModeCBC")
+            mode = c.create_unicode_buffer(chaining_mode)
             self._check(self.api.BCryptSetProperty(self.algorithm, "ChainingMode", mode, c.sizeof(mode), 0))
             secret = c.create_string_buffer(key, len(key))
             self._check(self.api.BCryptGenerateSymmetricKey(self.algorithm, c.byref(self.key), None, 0, secret, len(key), 0))
@@ -68,15 +79,22 @@ class CngAES:
         if status != 0:
             raise RuntimeError("Windows CNG operation failed")
 
-    def decrypt(self, iv: bytes, data: bytes) -> bytes:
+    def decrypt(self, iv: bytes | None, data: bytes) -> bytes:
         from ctypes import wintypes as w
-        if len(iv) != 16 or len(data) % 16:
-            raise ValueError("Invalid CBC block length")
+        if len(data) % 16:
+            raise ValueError("Invalid AES block length")
+        if self.chaining_mode == "ChainingModeCBC":
+            if iv is None or len(iv) != 16:
+                raise ValueError("Invalid CBC IV length")
+            vector = c.create_string_buffer(bytes(iv), len(iv))
+            vector_len = len(iv)
+        else:
+            vector = None
+            vector_len = 0
         source = c.create_string_buffer(bytes(data), len(data))
-        vector = c.create_string_buffer(bytes(iv), len(iv))
         output = c.create_string_buffer(len(data))
         written = w.ULONG()
-        self._check(self.api.BCryptDecrypt(self.key, source, len(data), None, vector, len(iv), output, len(output), c.byref(written), 0))
+        self._check(self.api.BCryptDecrypt(self.key, source, len(data), None, vector, vector_len, output, len(output), c.byref(written), 0))
         if written.value != len(data):
             raise ValueError("Windows CNG returned a partial page")
         return output.raw
@@ -99,7 +117,11 @@ def decrypt_pages(data: bytes, key: bytes, *, aes_factory=None) -> bytes:
     try:
         for index in range(len(data) // PAGE):
             page = data[index * PAGE:(index + 1) * PAGE]
-            if not authenticate(page, index + 1, authentication_key):
+            number = index + 1
+            if is_sqlite_lock_byte_page(page, number):
+                output.extend(ZERO_PAGE)
+                continue
+            if not authenticate(page, number, authentication_key):
                 raise ValueError("Database page authentication failed")
             start = 16 if index == 0 else 0
             decoded = aes.decrypt(page[PAGE - RESERVE:PAGE - 64], page[start:PAGE - RESERVE])

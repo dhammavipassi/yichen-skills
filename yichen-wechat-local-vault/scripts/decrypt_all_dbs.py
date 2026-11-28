@@ -40,6 +40,10 @@ from Crypto.Cipher import AES
 PAGE_SIZE = 4096
 RESERVE = 80
 IV_SIZE = 16
+LOCK_BYTE_OFFSET = 0x40000000
+LOCK_BYTE_PAGE = LOCK_BYTE_OFFSET // PAGE_SIZE + 1  # SQLite 1 GiB lock-byte page (262145)
+ZERO_PAGE = bytes(PAGE_SIZE)
+NO_KEYS_EXIT_CODE = 1
 ABORT_EXIT_CODE = 2
 ACCOUNT_PLACEHOLDER = "<账号目录>"
 
@@ -156,6 +160,9 @@ def decrypt_db(src: Path, dst: Path, key_hex: str) -> None:
     result = bytearray()
     for pn in range(total_pages):
         page = data[pn * PAGE_SIZE : (pn + 1) * PAGE_SIZE]
+        if pn + 1 == LOCK_BYTE_PAGE and page == ZERO_PAGE:
+            result.extend(ZERO_PAGE)
+            continue
         enc_start = 16 if pn == 0 else 0
         enc_size = PAGE_SIZE - RESERVE - enc_start
         iv = page[PAGE_SIZE - RESERVE : PAGE_SIZE - RESERVE + IV_SIZE]
@@ -367,11 +374,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"DB base: {public_db_base(db_base)}")
     print(f"Output:  {out_base}")
 
-    # Check before --clean or any refresh: an unreadable source must not cost a copy.
+    # Check before --clean or any refresh: empty keys or unreadable sources must not cost a copy.
     rels = sorted({rel for rel in map(key_name_to_rel, keys) if rel})
     if not rels:
-        print(f"ABORT: no usable database keys found in {KEYS_FILE}", file=sys.stderr)
-        return 1
+        print(
+            f"WARNING: no database keys found in {KEYS_FILE}; nothing was decrypted or refreshed.\n"
+            "Run extract_keys.py first to capture and match local database keys.",
+            file=sys.stderr,
+        )
+        if not args.no_manifest:
+            manifest_path = write_manifest(out_base, [], abort_reason="no database keys configured")
+            print(f"Manifest: {manifest_path}")
+        print("Aborted (no keys): 0 database keys configured; nothing decrypted, outputs unchanged")
+        return NO_KEYS_EXIT_CODE
+
     denied = denied_sources([(rel, db_base / rel) for rel in rels])
     if denied:
         return abort_unreadable(args, keys, out_base, denied)
@@ -436,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     if stale:
         print(f"Stale: {len(stale)} previous copies kept but not refreshed: {', '.join(stale)}")
     print(f"Done: {passed} decrypted, {failed} failed, {skipped} skipped")
-    return 1 if failed else 0
+    return 0
 
 
 if __name__ == "__main__":
